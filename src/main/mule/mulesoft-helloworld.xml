@@ -11,6 +11,6 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 	<flow name="mulesoft-helloworldFlow" doc:id="1e715d47-3d1b-4319-b777-0bae3c851810" >
 		<http:listener doc:name="Listener" doc:id="f274f287-f1ec-4787-98bb-fcdd68df24e0" config-ref="HTTP_Listener_config" path="/helloworld"/>
 		<logger level="INFO" doc:name="Logger" doc:id="9202fad9-d52f-4c65-950e-8af2637ceb80" message='#["Hello World program!!"]'/>
-		<set-payload value='#["Hello World program!!"]' doc:name="Set Payload" doc:id="f6d50d23-82b8-4194-9756-3668635337df" />
+		<set-payload value='#[output application/json&#10;---&#10;"Hello World program!!"]' doc:name="Set Payload" doc:id="f6d50d23-82b8-4194-9756-3668635337df" />
 	</flow>
 </mule>
