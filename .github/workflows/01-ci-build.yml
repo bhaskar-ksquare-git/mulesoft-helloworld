@@ -6,7 +6,6 @@ on:
       - main
 
 jobs:
-
   build:
 
     runs-on: self-hosted
@@ -28,3 +27,19 @@ jobs:
 
       - name: Verify Maven
         run: mvn -version
+
+      - name: Build Mule Application
+        run: |
+          mvn clean package
+
+      - name: Verify Build Output
+        run: |
+          ls -lh target
+
+      - name: Deploy to Mule Runtime
+        run: |
+          sudo cp target/*.jar /opt/mule/mule-enterprise-standalone-4.9.8/apps/
+
+      - name: Verify Deployment
+        run: |
+          ls -lh /opt/mule/mule-enterprise-standalone-4.9.8/apps/
