@@ -1,16 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http"
-	xmlns="http://www.mulesoft.org/schema/mule/core"
-	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
 http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
-http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
 	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="0d352274-c9bf-4c85-8156-a0a81803d245" >
 		<http:listener-connection host="0.0.0.0" port="8082" />
 	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="b6b460d9-3b64-4bde-af92-32a2ea174672" >
+		<db:generic-connection url="jdbc:postgresql://10.60.1.81:5432/keycloak" driverClassName="org.postgresql.Driver" user="keycloak" password="KeycloakDB@123"/>
+	</db:config>
 	<flow name="mulesoft-helloworldFlow" doc:id="1e715d47-3d1b-4319-b777-0bae3c851810" >
 		<http:listener doc:name="Listener" doc:id="f274f287-f1ec-4787-98bb-fcdd68df24e0" config-ref="HTTP_Listener_config" path="/helloworld"/>
 		<logger level="INFO" doc:name="Logger" doc:id="9202fad9-d52f-4c65-950e-8af2637ceb80" message='#["Hello Uday!!"]'/>
 		<set-payload value='#[output application/json&#10;---&#10;"Hello Uday!!"]' doc:name="Set Payload" doc:id="f6d50d23-82b8-4194-9756-3668635337df" />
+		<db:select doc:name="Select" doc:id="9f4d4299-2584-4871-b743-f688a4784b28" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT 1]]></db:sql>
+		</db:select>
 	</flow>
 </mule>
