@@ -1,0 +1,283 @@
+#%RAML 1.0
+title: Keycloak Token API
+description: |
+  MuleSoft integration API that exposes OAuth 2.0 token generation and validation
+  endpoints backed by Keycloak Authorization Server.
+
+  - POST /gettoken   → Client Credentials Grant (generates access token)
+  - POST /validatetoken → Token Introspection (validates token and returns claims)
+version: v1
+baseUri: http://localhost:8081/api
+mediaType: application/json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Types
+# ─────────────────────────────────────────────────────────────────────────────
+types:
+
+  TokenResponse:
+    description: Successful OAuth 2.0 access token response from Keycloak
+    type: object
+    properties:
+      access_token:
+        type: string
+        description: The JWT access token issued by Keycloak
+        example: "eyJraWQiOiJteUtleUlkIiwiYWxnIjoiUlMyNTYifQ..."
+      token_type:
+        type: string
+        description: Token type (always Bearer for Keycloak)
+        example: "Bearer"
+      expires_in:
+        type: integer
+        description: Token lifetime in seconds
+        example: 3600
+      scope:
+        type: string
+        description: Space-separated list of granted scopes
+        example: "muleapi"
+
+  ValidateTokenRequest:
+    description: Request body for token validation containing the access token to introspect
+    type: object
+    properties:
+      access_token:
+        type: string
+        description: The Bearer access token to validate
+        example: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+  IntrospectActiveResponse:
+    description: Keycloak token introspection response for a valid active token
+    type: object
+    properties:
+      exp:
+        type: integer
+        description: Token expiration time (Unix timestamp)
+        example: 1780321602
+      iat:
+        type: integer
+        description: Token issued-at time (Unix timestamp)
+        example: 1780321542
+      jti:
+        type: string
+        description: Unique identifier for the token
+        example: "trrtcc:eae59398-b386-f5c4-ea79-be62fdf2a4b9"
+      iss:
+        type: string
+        description: Token issuer (Keycloak realm URL)
+        example: "http://localhost:8080/realms/Muletest"
+      sub:
+        type: string
+        description: Subject identifier (user or service account ID)
+        example: "1b32e1a0-34ee-4e05-88fe-ee6d41c698a7"
+      typ:
+        type: string
+        description: Token type
+        example: "Bearer"
+      azp:
+        type: string
+        description: Authorized party (client ID)
+        example: "Salesforce-dev"
+      scope:
+        type: string
+        description: Space-separated list of scopes
+        example: "email profile"
+      client_id:
+        type: string
+        description: Client ID that requested the token
+        example: "Salesforce-dev"
+      username:
+        type: string
+        description: Username associated with the token
+        example: "service-account-salesforce-dev"
+      token_type:
+        type: string
+        example: "Bearer"
+      active:
+        type: boolean
+        description: Whether the token is currently active and valid
+        example: true
+
+  IntrospectInactiveResponse:
+    description: Keycloak token introspection response for an invalid or expired token (RFC 7662)
+    type: object
+    properties:
+      active:
+        type: boolean
+        description: Always false for inactive tokens
+        example: false
+
+  ErrorResponse:
+    description: Standard error response structure
+    type: object
+    properties:
+      error:
+        type: string
+        description: Error code
+        enum: [INVALID_REQUEST, INVALID_CLIENT, INVALID_TOKEN, SERVICE_UNAVAILABLE, INTERNAL_SERVER_ERROR]
+      description:
+        type: string
+        description: Human-readable error description
+        example: "The request is malformed or missing required parameters"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+
+/gettoken:
+  description: |
+    Generate an OAuth 2.0 access token from Keycloak using the Client Credentials grant type.
+    Client ID and Client Secret are stored as encrypted secure properties in the Mule application.
+    No request body is required.
+
+  post:
+    description: |
+      Invoke Keycloak token endpoint with grant_type=client_credentials using HTTP Basic Auth.
+      Returns an access token that can be used to authenticate against protected APIs.
+
+      **Positive scenario:** Returns access_token with token_type, expires_in, and scope.
+      **Negative scenarios:**
+      - 401 INVALID_CLIENT: Wrong client ID or secret in secure properties
+      - 503 SERVICE_UNAVAILABLE: Keycloak server is unreachable or timed out
+      - 500 INTERNAL_SERVER_ERROR: Unexpected error from Keycloak
+    body:
+      application/json:
+        description: No request body required for Client Credentials grant
+        example: |
+          {}
+    responses:
+      200:
+        description: Access token successfully generated
+        body:
+          application/json:
+            type: TokenResponse
+            example:
+              access_token: "eyJraWQiOiJteUtleUlkIiwiYWxnIjoiUlMyNTYifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+              token_type: "Bearer"
+              expires_in: 3600
+              scope: "muleapi"
+      401:
+        description: |
+          **Negative:** Invalid client credentials - client ID or secret is incorrect.
+          Verify keycloak.client.id and keycloak.client.secret in secure properties.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INVALID_CLIENT"
+              description: "Client authentication failed - verify client ID and secret in secure properties"
+      503:
+        description: |
+          **Negative:** Keycloak authorization server is unreachable or the request timed out.
+          Check that Keycloak is running at keycloak.host:keycloak.port.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "SERVICE_UNAVAILABLE"
+              description: "Keycloak authorization server is unreachable or timed out - please try again later"
+      500:
+        description: |
+          **Negative:** Internal server error - unexpected failure during token generation.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INTERNAL_SERVER_ERROR"
+              description: "An unexpected internal error occurred"
+
+/validatetoken:
+  description: |
+    Validate an OAuth 2.0 access token using Keycloak Token Introspection (RFC 7662).
+    Returns the full token claims if the token is active, or {"active": false} if invalid/expired.
+
+  post:
+    description: |
+      Invoke Keycloak token introspection endpoint to validate an access token.
+      Returns token claims if active, or {"active": false} for invalid/expired tokens.
+
+      **Positive scenario (active token):** Returns full JWT claims including exp, sub, client_id, scope, etc.
+      **Negative scenarios:**
+      - 400 INVALID_REQUEST: access_token field missing or empty in request body
+      - 200 active:false: Token is invalid, expired, or revoked (RFC 7662 standard behavior)
+      - 401 INVALID_CLIENT: Client authentication failed against Keycloak introspect endpoint
+      - 503 SERVICE_UNAVAILABLE: Keycloak server unreachable or timed out
+    body:
+      application/json:
+        type: ValidateTokenRequest
+        example:
+          access_token: "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJteUtleUlkIn0..."
+    responses:
+      200:
+        description: |
+          Token introspection completed.
+          - active:true → token is valid, returns full claims
+          - active:false → token is invalid or expired (RFC 7662 standard response)
+        body:
+          application/json:
+            examples:
+              active_token:
+                description: Valid active token with full claims
+                value:
+                  exp: 1780321602
+                  iat: 1780321542
+                  jti: "trrtcc:eae59398-b386-f5c4-ea79-be62fdf2a4b9"
+                  iss: "http://localhost:8080/realms/Muletest"
+                  sub: "1b32e1a0-34ee-4e05-88fe-ee6d41c698a7"
+                  typ: "Bearer"
+                  azp: "Salesforce-dev"
+                  scope: "email profile"
+                  client_id: "Salesforce-dev"
+                  username: "service-account-salesforce-dev"
+                  token_type: "Bearer"
+                  active: true
+              inactive_token:
+                description: Invalid or expired token returns active false per RFC 7662
+                value:
+                  active: false
+      400:
+        description: |
+          **Negative:** access_token field is missing or empty in the JSON request body.
+          Ensure the body contains {"access_token": "eyJ..."}.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INVALID_REQUEST"
+              description: "access_token is required in the request body"
+      401:
+        description: |
+          **Negative:** Client authentication against Keycloak introspect endpoint failed.
+          Client credentials in secure properties are invalid.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INVALID_CLIENT"
+              description: "Client authentication failed - verify client ID and secret in secure properties"
+      403:
+        description: |
+          **Negative:** Forbidden access to the introspect endpoint.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INVALID_TOKEN"
+              description: "The access token is invalid, expired, or has been revoked"
+      503:
+        description: |
+          **Negative:** Keycloak server is unreachable or the request timed out.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "SERVICE_UNAVAILABLE"
+              description: "Keycloak authorization server is unreachable or timed out - please try again later"
+      500:
+        description: |
+          **Negative:** Internal server error during token validation.
+        body:
+          application/json:
+            type: ErrorResponse
+            example:
+              error: "INTERNAL_SERVER_ERROR"
+              description: "An unexpected internal error occurred"

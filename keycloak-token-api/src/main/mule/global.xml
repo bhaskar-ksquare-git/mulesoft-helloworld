@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd">
+
+    <!-- ===== Configuration Properties ===== -->
+    <configuration-properties
+        file="config.yaml"
+        doc:name="Config Properties"
+        doc:description="Loads non-sensitive application properties from config.yaml including host, port, realm, and encryption key" />
+
+    <!-- ===== Global Application Configuration ===== -->
+    <configuration defaultErrorHandler-ref="global-error-handler" />
+
+    <!-- ===== HTTP Listener Configuration ===== -->
+    <http:listener-config
+        name="HTTP_Listener_config"
+        doc:name="HTTP Listener Config"
+        doc:description="HTTP Listener configuration binding keycloak-token-api on all interfaces at port 8081">
+        <http:listener-connection host="10.60.3.10" port="${http.port}" />
+    </http:listener-config>
+
+    <!-- ===== Keycloak HTTP Request Configuration ===== -->
+    <http:request-config
+        name="Salesforce-keycloak-request-config"
+        basePath="/realms/${keycloak.realm}/protocol/openid-connect"
+        doc:name="Keycloak Request Config"
+        doc:description="HTTP Request config for Keycloak OpenID Connect endpoints with HTTP Basic Auth using encrypted client credentials">
+        <http:request-connection host="${keycloak.host}" protocol="HTTPS">
+            <http:authentication>
+                <http:basic-authentication
+                    username="${keycloak.sf_clientid}"
+                    password="${keycloak.sf_clientsecret}" />
+            </http:authentication>
+        </http:request-connection>
+    </http:request-config>
+    
+    <http:request-config
+        name="React-keycloak-request-config"
+        basePath="/realms/${keycloak.realm}/protocol/openid-connect"
+        doc:name="Keycloak Request Config"
+        doc:description="HTTP Request config for Keycloak OpenID Connect endpoints with HTTP Basic Auth using encrypted client credentials">
+        <http:request-connection host="${keycloak.host}" port="${keycloak.port}">
+            <http:authentication>
+                <http:basic-authentication
+                    username="${keycloak.react_clientId}"
+                    password="${keycloak.react_clientsecret}" />
+            </http:authentication>
+        </http:request-connection>
+    </http:request-config>
+
+    <!-- ===== Global Error Handler ===== -->
+    <!-- Covers both positive and negative scenarios:
+         APP:VALIDATION  → 400 missing/invalid input fields
+         HTTP:BAD_REQUEST → 400 bad request from Keycloak
+         HTTP:UNAUTHORIZED → 401 invalid client credentials
+         HTTP:FORBIDDEN   → 403 invalid or revoked token
+         HTTP:CONNECTIVITY / HTTP:TIMEOUT → 503 Keycloak unreachable
+         ANY              → 500 all other unexpected errors -->
+    <error-handler
+        name="global-error-handler"
+        doc:name="Global Error Handler"
+        doc:description="Centralized error handler covering all negative scenarios: validation (400), auth (401), token (403), connectivity (503), and internal errors (500)">
+
+        <!-- Negative Scenario: Missing or invalid request fields -->
+        <on-error-propagate
+            type="APP:VALIDATION, HTTP:BAD_REQUEST, MULE:EXPRESSION"
+            doc:name="400 Bad Request"
+            doc:description="Handles missing access_token, malformed request body, or Keycloak 400 - returns INVALID_REQUEST JSON">
+            <ee:transform
+                doc:name="Build 400 Response"
+                doc:description="Sets payload to INVALID_REQUEST JSON and httpStatus variable to 400">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "error": "INVALID_REQUEST",
+    "description": error.description default "The request is malformed or missing required parameters"
+}]]></ee:set-payload>
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="httpStatus"><![CDATA[400]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Negative Scenario: Invalid client credentials sent to Keycloak -->
+        <on-error-propagate
+            type="HTTP:UNAUTHORIZED"
+            doc:name="401 Unauthorized"
+            doc:description="Handles Keycloak 401 - invalid client ID or secret - returns INVALID_CLIENT JSON">
+            <ee:transform
+                doc:name="Build 401 Response"
+                doc:description="Sets payload to INVALID_CLIENT JSON and httpStatus variable to 401">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "error": "INVALID_CLIENT",
+    "description": error.description default "Client authentication failed - verify client ID and secret in secure properties"
+}]]></ee:set-payload>
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="httpStatus"><![CDATA[401]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Negative Scenario: Forbidden access or invalid token -->
+        <on-error-propagate
+            type="HTTP:FORBIDDEN"
+            doc:name="403 Forbidden"
+            doc:description="Handles Keycloak 403 forbidden response - returns INVALID_TOKEN JSON">
+            <ee:transform
+                doc:name="Build 403 Response"
+                doc:description="Sets payload to INVALID_TOKEN JSON and httpStatus variable to 403">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "error": "INVALID_TOKEN",
+    "description": error.description default "The access token is invalid, expired, or has been revoked"
+}]]></ee:set-payload>
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="httpStatus"><![CDATA[403]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Negative Scenario: Keycloak server unreachable or request timed out -->
+        <on-error-propagate
+            type="HTTP:CONNECTIVITY, HTTP:TIMEOUT, HTTP:SERVICE_UNAVAILABLE"
+            doc:name="503 Service Unavailable"
+            doc:description="Handles Keycloak connectivity failures, timeouts, or unavailability - returns SERVICE_UNAVAILABLE JSON">
+            <ee:transform
+                doc:name="Build 503 Response"
+                doc:description="Sets payload to SERVICE_UNAVAILABLE JSON and httpStatus variable to 503">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "error": "SERVICE_UNAVAILABLE",
+    "description": error.description default "Keycloak authorization server is unreachable or timed out - please try again later"
+}]]></ee:set-payload>
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="httpStatus"><![CDATA[503]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Negative Scenario: All other unexpected errors -->
+        <on-error-propagate
+            type="ANY"
+            doc:name="500 Internal Server Error"
+            doc:description="Catch-all handler for any other unexpected errors - returns INTERNAL_SERVER_ERROR JSON">
+            <ee:transform
+                doc:name="Build 500 Response"
+                doc:description="Sets payload to INTERNAL_SERVER_ERROR JSON and httpStatus variable to 500">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "error": "INTERNAL_SERVER_ERROR",
+    "description": error.description default "An unexpected internal error occurred"
+}]]></ee:set-payload>
+                </ee:message>
+                <ee:variables>
+                    <ee:set-variable variableName="httpStatus"><![CDATA[500]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </on-error-propagate>
+
+    </error-handler>
+
+</mule>

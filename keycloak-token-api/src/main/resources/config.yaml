@@ -1,0 +1,17 @@
+http:
+  port: "8083"
+
+keycloak:
+  host: "keycloak.ksquare.local"
+  port: "8080"
+  realm: "test-realm"
+  sf_clientid: "salesforce-oidc-client"
+  sf_clientsecret: "mSh79FZKF5y3b3qirHYr86lGXjxmhJIz"  
+  react_clientId: "react-app-client"
+  react_clientsecret: "Cn8061g4cVrqCDU2K15H9LnBBEkzQKyN"
+
+# Encryption key for secure properties - replace with actual key in production
+# In production pass via JVM arg: -Dsecure.key=<your-16-char-AES-key>
+secure:
+  key: "MyEncryptionKey16"
+  

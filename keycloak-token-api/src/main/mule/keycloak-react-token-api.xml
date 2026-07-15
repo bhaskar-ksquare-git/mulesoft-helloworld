@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- =========================================================
+         Flow 1: Get OAuth 2.0 Access Token via Client Credentials
+         POST /gettoken  → Keycloak /token endpoint
+         Negative Scenarios Handled:
+           - Keycloak 401 → HTTP:UNAUTHORIZED → 401 INVALID_CLIENT
+           - Keycloak 400 → HTTP:BAD_REQUEST  → 400 INVALID_REQUEST
+           - Keycloak unreachable → HTTP:CONNECTIVITY → 503 SERVICE_UNAVAILABLE
+           - No access_token in Keycloak response → APP:VALIDATION → 400 INVALID_REQUEST
+         ========================================================= -->
+    <flow name="keycloak-get-react-token-flow"
+          doc:name="keycloak-get-token-flow"
+          doc:description="Exposes POST /gettoken to generate OAuth 2.0 access tokens from Keycloak using Client Credentials grant type">
+
+        <!-- Step 1: Receive HTTP POST /gettoken -->
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/getreacttoken"
+            allowedMethods="POST"
+            doc:name="POST /gettoken"
+            doc:description="Receives HTTP POST requests on /gettoken to initiate the OAuth 2.0 Client Credentials flow">
+            <http:response statusCode="200">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+
+        <!-- Step 2: Log incoming request -->
+        <logger
+            level="INFO"
+            message="#['[keycloak-get-token-flow] Received POST /gettoken from ' ++ (attributes.remoteAddress default 'unknown')]"
+            doc:name="Log Incoming Request"
+            doc:description="Logs the client remote address for the incoming get-token request" />
+
+        <!-- Step 3: Call Keycloak token endpoint with client_credentials grant.
+             Negative: Keycloak 401/400/5xx → HTTP error types → global error handler.
+             Negative: Keycloak unreachable → HTTP:CONNECTIVITY → 503 handler. -->
+        <http:request
+            method="POST"
+            doc:name="React Request Keycloak Access Token"
+            doc:description="POST grant_type=client_credentials to Keycloak token endpoint - validates response status, throws HTTP errors for non-2xx" path="/token" config-ref="React-keycloak-request-config">
+            <http:body><![CDATA[grant_type=client_credentials]]></http:body>
+            <http:headers><![CDATA[#[output application/java
+---
+{
+	"Authorization" : "c2FsZXNmb3JjZS1vaWRjLWNsaWVudCBtU2g3OUZaS0Y1eTNiM3FpckhZcjg2bEdYanhtaEpJeg",
+	"Content-Type" : "application/x-www-form-urlencoded"
+}]]]></http:headers>
+            <http:response-validator>
+                <http:success-status-code-validator values="200..299" />
+            </http:response-validator>
+        </http:request>
+
+        <!-- Step 4: Negative scenario - validate Keycloak returned an access_token.
+             Guard against unexpected Keycloak responses that return 200 but have no token. -->
+        <choice
+            doc:name="Token Present in Response?"
+            doc:description="Validates that Keycloak returned an access_token field - guards against unexpected empty responses">
+            <when
+                expression="#[payload.access_token != null and payload.access_token != '']"
+                doc:name="access_token present"
+                doc:description="Access token is present in the Keycloak response - proceed with normal flow">
+
+                <logger
+                    level="INFO"
+                    message="#['[keycloak-get-token-flow] Obtained ' ++ (payload.token_type default 'Bearer') ++ ' token. Expires in: ' ++ (payload.expires_in as String default '0') ++ 's']"
+                    doc:name="Log Token Retrieved"
+                    doc:description="Logs the token type and expiry duration from the successful Keycloak token response" />
+
+                <ee:transform
+                    doc:name="Transform Token Response"
+                    doc:description="Serializes access_token, token_type, expires_in and scope from the Keycloak response to application/json">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    access_token: payload.access_token,
+    token_type: payload.token_type,
+    expires_in: payload.expires_in,
+    scope: payload.scope default ""
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+            </when>
+            <otherwise
+                doc:name="access_token missing"
+                doc:description="Negative: Keycloak returned 200 but no access_token - raise APP:VALIDATION to return 400 INVALID_REQUEST">
+
+                <logger
+                    level="ERROR"
+                    message="[keycloak-get-token-flow] Keycloak returned 200 but access_token is missing - unexpected response"
+                    doc:name="Log Missing Token Error"
+                    doc:description="Logs the unexpected case where Keycloak returned 200 without an access_token field" />
+
+                <raise-error
+                    type="APP:VALIDATION"
+                    description="Keycloak token endpoint returned a response without an access_token field"
+                    doc:name="Raise Missing Token Error"
+                    doc:description="Raises APP:VALIDATION error - caught by global error handler and returned as 400 INVALID_REQUEST" />
+
+            </otherwise>
+        </choice>
+
+    </flow>
+
+    <!-- =========================================================
+         Flow 2: Validate OAuth 2.0 Access Token via Introspection
+         POST /validatetoken  → Keycloak /token/introspect endpoint
+         Negative Scenarios Handled:
+           - Missing access_token field in request body → APP:VALIDATION → 400 INVALID_REQUEST
+           - Empty access_token value → APP:VALIDATION → 400 INVALID_REQUEST
+           - Keycloak 401 → HTTP:UNAUTHORIZED → 401 INVALID_CLIENT
+           - Keycloak unreachable → HTTP:CONNECTIVITY → 503 SERVICE_UNAVAILABLE
+           - Token inactive (active: false) → returns {"active": false} per RFC 7662
+         ========================================================= -->
+    <flow name="keycloak-validate-react-token-flow"
+          doc:name="keycloak-validate-token-flow"
+          doc:description="Exposes POST /validatetoken to validate an OAuth 2.0 access token using Keycloak Token Introspection API">
+
+        <!-- Step 1: Receive HTTP POST /validatetoken -->
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/validatereacttoken"
+            allowedMethods="POST"
+            doc:name="POST /validatetoken"
+            doc:description="Receives HTTP POST on /validatetoken with JSON body containing the access_token field to validate">
+            <http:response statusCode="200">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+
+        <!-- Step 2: Log incoming request -->
+        <logger
+            level="INFO"
+            message="#['[keycloak-validate-token-flow] Received POST /validatetoken from ' ++ (attributes.remoteAddress default 'unknown')]"
+            doc:name="Log Incoming Request"
+            doc:description="Logs the client remote address for the incoming validate-token request" />
+
+        <!-- Step 3: Negative scenario - validate access_token is present and non-empty in request body -->
+        <choice
+            doc:name="access_token in Request Body?"
+            doc:description="Validates that the JSON request body contains a non-empty access_token field before calling Keycloak">
+            <when
+                expression="#[payload.access_token != null and payload.access_token != '']"
+                doc:name="access_token provided"
+                doc:description="access_token is present and non-empty - proceed with Keycloak introspection">
+
+                <!-- Step 4: Build form-urlencoded introspect body from JSON input -->
+                <ee:transform
+                    doc:name="Build Introspect Request Body"
+                    doc:description="Extracts access_token from JSON body and encodes it as form-urlencoded token=value string for Keycloak">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+---
+"token=" ++ (payload.access_token default "")]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <!-- Step 5: Call Keycloak introspect endpoint.
+                     Negative: Keycloak 401/400/5xx → HTTP error types → global error handler.
+                     Negative: Keycloak unreachable → HTTP:CONNECTIVITY → 503 handler.
+                     Note: active:false is a valid 200 response per RFC 7662 and is passed through. -->
+                <http:request
+                    method="POST"
+                    path="/token/introspect"
+                    config-ref="React-keycloak-request-config"
+                    doc:name="React Request Keycloak Token Introspection"
+                    doc:description="POST form-urlencoded token body to Keycloak introspect endpoint - validates response status, throws HTTP errors for non-2xx">
+                    <http:headers><![CDATA[#[{'Content-Type': 'application/x-www-form-urlencoded'}]]]></http:headers>
+                    <http:response-validator>
+                        <http:success-status-code-validator values="200..299" />
+                    </http:response-validator>
+                </http:request>
+
+                <!-- Step 6: Check active flag from introspection result -->
+                <choice
+                    doc:name="Token Active?"
+                    doc:description="Routes based on the Keycloak introspection active flag - active:true for valid tokens, active:false for invalid/expired tokens">
+                    <when
+                        expression="#[payload.active == true]"
+                        doc:name="Token is active"
+                        doc:description="Token is valid and active - log success and return full claims payload">
+
+                        <logger
+                            level="INFO"
+                            message="#['[keycloak-validate-token-flow] Token is ACTIVE. Subject: ' ++ (payload.sub default 'unknown') ++ ', Client: ' ++ (payload.client_id default 'unknown')]"
+                            doc:name="Log Active Token"
+                            doc:description="Logs the token subject and client ID for a valid active token from Keycloak introspection" />
+
+                        <ee:transform
+                            doc:name="Transform Active Token Response"
+                            doc:description="Serializes the full active token introspection response including all JWT claims to application/json">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    </when>
+                    <otherwise
+                        doc:name="Token is inactive"
+                        doc:description="Negative: Token is invalid or expired (active:false) - log warning and return standard inactive response per RFC 7662">
+
+                        <logger
+                            level="WARN"
+                            message="[keycloak-validate-token-flow] Token introspection returned active:false - token is invalid or expired"
+                            doc:name="Log Inactive Token"
+                            doc:description="Logs a warning when Keycloak reports the token as inactive - could be expired, revoked, or malformed" />
+
+                        <ee:transform
+                            doc:name="Transform Inactive Token Response"
+                            doc:description="Returns standard RFC 7662 inactive token response with active:false when Keycloak reports token as invalid or expired">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    "active": false,
+    "message": "token is invalid or expired"
+    
+}]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    </otherwise>
+                </choice>
+
+            </when>
+            <otherwise
+                doc:name="access_token missing or empty"
+                doc:description="Negative: The request body is missing the access_token field or it is empty - raise APP:VALIDATION to return 400 INVALID_REQUEST">
+
+                <logger
+                    level="ERROR"
+                    message="[keycloak-validate-token-flow] Validation failed: access_token is missing or empty in request body"
+                    doc:name="Log Validation Error"
+                    doc:description="Logs the validation failure when the required access_token field is absent or blank in the request body" />
+
+                <raise-error
+                    type="APP:VALIDATION"
+                    description="access_token is required in the request body. Example: {&quot;access_token&quot;: &quot;eyJhbGci...&quot;}"
+                    doc:name="Raise Missing access_token Error"
+                    doc:description="Raises APP:VALIDATION error - caught by global error handler and returned as 400 INVALID_REQUEST" />
+
+            </otherwise>
+        </choice>
+
+    </flow>
+
+</mule>
